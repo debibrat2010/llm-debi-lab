@@ -1,0 +1,2 @@
+# Editable install: dependencies come from pyproject.toml
+-e ".[dev]"

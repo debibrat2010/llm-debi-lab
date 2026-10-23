@@ -1,0 +1,3 @@
+{"id":"g1","prompt":"Define tokenization in one short sentence for a beginner.","must_contain_any":["token"]}
+{"id":"g2","prompt":"What is the context window in one sentence?","must_contain_any":["context","token"]}
+{"id":"g3","prompt":"Give two practical tips for evaluating LLM outputs locally.","must_contain_any":["eval","tip"]}

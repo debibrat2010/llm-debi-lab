@@ -1,0 +1,9 @@
+RAG stands for Retrieval-Augmented Generation. It combines information retrieval with language generation.
+Instead of relying only on model parameters, the system first fetches relevant context and then asks the model
+to answer using that context.
+
+In local-first projects, RAG is useful for private notes, internal docs, and frequently changing knowledge.
+It can make answers more grounded and auditable because retrieved passages are visible.
+
+RAG quality depends on both retrieval and generation. If retrieval misses key facts, the answer can still be wrong.
+If generation ignores context, the model may hallucinate even after good retrieval.

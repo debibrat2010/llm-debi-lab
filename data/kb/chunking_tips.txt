@@ -1,0 +1,9 @@
+Chunking divides documents into smaller pieces before embedding. Chunk size and overlap are major tuning knobs.
+Large chunks preserve context but can include unrelated text. Small chunks increase precision but may lose context.
+Overlap helps preserve meaning across boundaries.
+
+A practical baseline is 50-120 words per chunk with 10-25 words overlap for plain text notes.
+Always inspect top retrieved chunks manually for representative queries.
+
+Evaluate retrieval separately from generation. Keep logs of query, retrieved chunks, and final answer.
+This makes it easier to diagnose whether failures come from retrieval misses or generation behavior.

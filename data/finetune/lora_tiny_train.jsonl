@@ -1,0 +1,5 @@
+{"instruction":"Explain tokenization simply.","response":"Tokenization breaks text into smaller pieces called tokens. Tokens can be words, subwords, punctuation, or symbols that the model can process numerically."}
+{"instruction":"Give two tips for writing better prompts.","response":"Be specific about the task and output format, and include constraints such as length or style so the model has less ambiguity."}
+{"instruction":"What is the context window?","response":"The context window is the maximum number of tokens the model can consider at once, including your prompt and the generated response."}
+{"instruction":"Why does lower temperature feel more consistent?","response":"Lower temperature reduces randomness in token selection, so the model tends to pick higher-probability words and produce more stable outputs."}
+{"instruction":"How should a beginner evaluate LLM output quickly?","response":"Check whether the answer follows instructions, includes key facts, and stays free of obvious contradictions or hallucinations."}

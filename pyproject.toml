@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-debi-lab"
+version = "0.1.0"
+description = "Hands-on local LLM learning lab for Apple Silicon macOS"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "torch",
+  "transformers",
+  "sentencepiece",
+  "accelerate",
+  "datasets",
+  "peft",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]

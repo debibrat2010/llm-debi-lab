@@ -1,0 +1,3 @@
+{"id":"q1","question":"Give practical tips for staying hydrated in daily life.","must_contain_any":["water bottle","thirsty","water-rich foods","pale yellow"],"min_top1_score":0.35}
+{"id":"q2","question":"Why can RAG still hallucinate sometimes?","must_contain_any":["retrieval","irrelevant","insufficient context","hallucinate"],"min_top1_score":0.2}
+{"id":"q3","question":"How does chunk overlap help retrieval quality?","must_contain_any":["boundaries","overlap","context"],"min_top1_score":0.2}
