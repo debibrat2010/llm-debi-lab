@@ -8,3 +8,12 @@ __pycache__/
 *.ipynb_checkpoints
 data/finetune/artifacts/
 data/eval/reports/
+
+# Cursor / local IDE (do not publish)
+.cursor/
+.cursorignore
+.cursorrules
+.claude/
+.idea/
+*.code-workspace
+.vscode/
