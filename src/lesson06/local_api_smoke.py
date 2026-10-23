@@ -51,6 +51,12 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        print(
+            f"POST /api/generate failed (is uvicorn running?): {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

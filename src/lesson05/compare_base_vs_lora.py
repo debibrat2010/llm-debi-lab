@@ -5,10 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from llm_debi_lab.device import pick_device
-from llm_debi_lab.generation import generate_continuation
+from llm_debi_lab.generation import generate_continuation, load_causal_lm
 from llm_debi_lab.settings import DEFAULT_MODEL_NAME
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,8 +15,8 @@ ADAPTER_DIR = ROOT / "data" / "finetune" / "artifacts" / "lesson05-lora"
 
 
 def main() -> None:
-    device = pick_device()
-    print(f"Device: {device}")
+    requested = pick_device()
+    print(f"Requested device: {requested}")
     print(f"Base model: {DEFAULT_MODEL_NAME}")
     print(f"Adapter dir: {ADAPTER_DIR}")
 
@@ -26,11 +25,11 @@ def main() -> None:
         "Keep wording simple."
     )
 
-    base_tok = AutoTokenizer.from_pretrained(DEFAULT_MODEL_NAME)
-    base_model = AutoModelForCausalLM.from_pretrained(DEFAULT_MODEL_NAME).to(device)
+    model, tokenizer, device = load_causal_lm(DEFAULT_MODEL_NAME, requested)
+    print(f"Using device: {device}")
     base_text = generate_continuation(
-        base_model,
-        base_tok,
+        model,
+        tokenizer,
         prompt,
         device,
         max_new_tokens=120,
@@ -44,12 +43,11 @@ def main() -> None:
         print("\nLoRA adapter not found. Run `python -m lesson05.lora_finetune` first.")
         return
 
-    lora_tok = AutoTokenizer.from_pretrained(DEFAULT_MODEL_NAME)
-    lora_base = AutoModelForCausalLM.from_pretrained(DEFAULT_MODEL_NAME).to(device)
-    lora_model = PeftModel.from_pretrained(lora_base, str(ADAPTER_DIR))
+    model = PeftModel.from_pretrained(model, str(ADAPTER_DIR))
+    model.eval()
     lora_text = generate_continuation(
-        lora_model,
-        lora_tok,
+        model,
+        tokenizer,
         prompt,
         device,
         max_new_tokens=120,

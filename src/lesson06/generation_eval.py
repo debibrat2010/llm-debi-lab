@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from transformers import AutoModelForCausalLM
-
 from llm_debi_lab.device import pick_device
-from llm_debi_lab.generation import generate_continuation_detailed, load_causal_lm
+from llm_debi_lab.generation import (
+    adapter_scope,
+    generate_continuation_detailed,
+    load_causal_lm,
+)
 from llm_debi_lab.settings import DEFAULT_MODEL_NAME
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +43,8 @@ def load_eval_rows(path: Path) -> list[dict]:
     return rows
 
 
-def try_load_lora(device: str):
+def try_load_lora(base_model):
+    """Attach the Lesson 5 adapter to the already loaded base model."""
     try:
         from peft import PeftModel  # noqa: PLC0415
     except ImportError:
@@ -49,8 +52,7 @@ def try_load_lora(device: str):
     if not LORA_ADAPTER_DIR.is_dir() or not any(LORA_ADAPTER_DIR.iterdir()):
         return None, f"missing:{LORA_ADAPTER_DIR}"
     try:
-        inner = AutoModelForCausalLM.from_pretrained(DEFAULT_MODEL_NAME).to(device)
-        wrapped = PeftModel.from_pretrained(inner, str(LORA_ADAPTER_DIR))
+        wrapped = PeftModel.from_pretrained(base_model, str(LORA_ADAPTER_DIR))
         wrapped.eval()
         return wrapped, "ok"
     except Exception as exc:  # pragma: no cover
@@ -93,7 +95,8 @@ def main() -> None:
     print(f"Base model: {DEFAULT_MODEL_NAME}")
 
     base_model, tokenizer, device = load_causal_lm(DEFAULT_MODEL_NAME, device_req)
-    lora_model, lora_note = try_load_lora(device)
+    lora_model, lora_note = try_load_lora(base_model)
+    active_model = lora_model if lora_model is not None else base_model
     if lora_model is None:
         print(f"LoRA: skipped ({lora_note})")
     else:
@@ -110,25 +113,27 @@ def main() -> None:
         prompt = str(row["prompt"])
         keys = list(row.get("must_contain_any", []))
 
-        b_txt, b_nt, b_el = generate_continuation_detailed(
-            base_model,
-            tokenizer,
-            prompt,
-            device,
-            max_new_tokens=160,
-            **gen_kw,
-        )
-        b_ok = keyword_hit(b_txt, keys)
-
-        if lora_model is not None:
-            l_txt, l_nt, l_el = generate_continuation_detailed(
-                lora_model,
+        with adapter_scope(active_model, enabled=False):
+            b_txt, b_nt, b_el = generate_continuation_detailed(
+                active_model,
                 tokenizer,
                 prompt,
                 device,
                 max_new_tokens=160,
                 **gen_kw,
             )
+        b_ok = keyword_hit(b_txt, keys)
+
+        if lora_model is not None:
+            with adapter_scope(active_model, enabled=True):
+                l_txt, l_nt, l_el = generate_continuation_detailed(
+                    active_model,
+                    tokenizer,
+                    prompt,
+                    device,
+                    max_new_tokens=160,
+                    **gen_kw,
+                )
             l_ok = keyword_hit(l_txt, keys)
             l_note = "ok"
         else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -90,20 +91,39 @@ def generate_continuation(
     return text
 
 
+def move_model_to_device(model, device: str):
+    """Move `model` onto `device`. If MPS placement fails, fall back to CPU."""
+    try:
+        model = model.to(device)
+        return model, device
+    except Exception:
+        if device == "mps":
+            model = model.to("cpu")
+            return model, "cpu"
+        raise
+
+
+@contextmanager
+def adapter_scope(model, enabled: bool):
+    """Run a block with a PEFT adapter on or off.
+
+    Models without `disable_adapter` are unchanged. A loaded adapter stays on
+    when `enabled` is True, and is restored afterward when it was turned off.
+    """
+    disable = getattr(model, "disable_adapter", None)
+    if enabled or not callable(disable):
+        yield
+        return
+    with disable():
+        yield
+
+
 def load_causal_lm(
     model_name: str, device: str
 ) -> tuple[AutoModelForCausalLM, AutoTokenizer, str]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     ensure_pad_token(tokenizer)
     model = AutoModelForCausalLM.from_pretrained(model_name)
-    try:
-        model = model.to(device)
-        resolved = device
-    except Exception:
-        if device == "mps":
-            model = model.to("cpu")
-            resolved = "cpu"
-        else:
-            raise
+    model, resolved = move_model_to_device(model, device)
     model.eval()
     return model, tokenizer, resolved

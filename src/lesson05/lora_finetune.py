@@ -10,13 +10,17 @@ from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorForLanguageModeling,
+    DataCollatorForSeq2Seq,
     Trainer,
     TrainingArguments,
 )
 
 from llm_debi_lab.device import pick_device
-from llm_debi_lab.generation import ensure_pad_token
+from llm_debi_lab.generation import (
+    ensure_pad_token,
+    format_prompt_for_causal,
+    move_model_to_device,
+)
 from llm_debi_lab.settings import DEFAULT_MODEL_NAME
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,8 +28,66 @@ TRAIN_PATH = ROOT / "data" / "finetune" / "lora_tiny_train.jsonl"
 OUTPUT_DIR = ROOT / "data" / "finetune" / "artifacts" / "lesson05-lora"
 
 
-def format_example(instruction: str, response: str) -> str:
-    return f"Instruction: {instruction}\nResponse: {response}"
+def format_train_pair(tokenizer: AutoTokenizer, instruction: str, response: str) -> tuple[str, str]:
+    """Return (inference prompt, full training text).
+
+    The prompt is exactly what `format_prompt_for_causal` sends at generation
+    time, so the adapter is trained on the same token prefix used in serving.
+    """
+    prompt = format_prompt_for_causal(tokenizer, instruction)
+    if getattr(tokenizer, "chat_template", None):
+        full = tokenizer.apply_chat_template(
+            [
+                {"role": "user", "content": instruction},
+                {"role": "assistant", "content": response},
+            ],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        if isinstance(full, str) and full.startswith(prompt):
+            return prompt, full
+        eos = tokenizer.eos_token or ""
+        return prompt, f"{prompt}{response}{eos}"
+    return prompt, f"{prompt}{response}"
+
+
+def mask_prompt_labels(prompt_ids: list[int], input_ids: list[int]) -> list[int]:
+    """Ignore prompt tokens in the loss. Keep only the response tokens."""
+    labels = list(input_ids)
+    if not prompt_ids or not labels:
+        return labels
+    if len(labels) >= len(prompt_ids) and labels[: len(prompt_ids)] == list(prompt_ids):
+        mask_len = len(prompt_ids)
+    else:
+        mask_len = 0
+        for prompt_id, input_id in zip(prompt_ids, labels):
+            if prompt_id != input_id:
+                break
+            mask_len += 1
+    if mask_len >= len(labels):
+        return [-100] * len(labels)
+    labels[:mask_len] = [-100] * mask_len
+    return labels
+
+
+def encode_supervised_example(
+    tokenizer: AutoTokenizer,
+    instruction: str,
+    response: str,
+    max_length: int = 256,
+) -> dict[str, list[int]]:
+    prompt, full = format_train_pair(tokenizer, instruction, response)
+    prompt_ids = list(
+        tokenizer(prompt, truncation=True, max_length=max_length)["input_ids"]
+    )
+    full_enc = tokenizer(full, truncation=True, max_length=max_length)
+    input_ids = list(full_enc["input_ids"])
+    attention_mask = list(full_enc["attention_mask"])
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": mask_prompt_labels(prompt_ids, input_ids),
+    }
 
 
 def load_train_records(path: Path) -> list[dict[str, str]]:
@@ -41,7 +103,6 @@ def load_train_records(path: Path) -> list[dict[str, str]]:
             {
                 "instruction": str(obj["instruction"]),
                 "response": str(obj["response"]),
-                "text": format_example(str(obj["instruction"]), str(obj["response"])),
             }
         )
     if not rows:
@@ -51,14 +112,15 @@ def load_train_records(path: Path) -> list[dict[str, str]]:
 
 def tokenize_dataset(ds: Dataset, tokenizer: AutoTokenizer) -> Dataset:
     def _tokenize(batch: dict[str, list[str]]) -> dict[str, list[list[int]]]:
-        tok = tokenizer(
-            batch["text"],
-            truncation=True,
-            max_length=256,
-            padding=False,
-        )
-        tok["labels"] = [ids[:] for ids in tok["input_ids"]]
-        return tok
+        encoded = [
+            encode_supervised_example(tokenizer, instruction, response)
+            for instruction, response in zip(batch["instruction"], batch["response"])
+        ]
+        return {
+            "input_ids": [row["input_ids"] for row in encoded],
+            "attention_mask": [row["attention_mask"] for row in encoded],
+            "labels": [row["labels"] for row in encoded],
+        }
 
     return ds.map(_tokenize, batched=True, remove_columns=ds.column_names)
 
@@ -74,7 +136,10 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MODEL_NAME)
     ensure_pad_token(tokenizer)
     model = AutoModelForCausalLM.from_pretrained(DEFAULT_MODEL_NAME)
-    model = model.to(requested)
+    model, resolved = move_model_to_device(model, requested)
+    print(f"Using device: {resolved}")
+    template = "chat template" if getattr(tokenizer, "chat_template", None) else "raw prompt"
+    print(f"Train/infer format: {template}")
 
     lora_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -104,7 +169,9 @@ def main() -> None:
         remove_unused_columns=False,
         fp16=False,
     )
-    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    # Seq2Seq collator keeps the -100 prompt mask. The language-modeling
+    # collator would replace labels with a copy of input_ids.
+    collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True)
     trainer = Trainer(
         model=model,
         args=args,

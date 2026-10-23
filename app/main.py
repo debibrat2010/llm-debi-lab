@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -9,10 +10,11 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoModel, AutoTokenizer
 
 from llm_debi_lab.device import pick_device
 from llm_debi_lab.generation import (
+    adapter_scope,
     generate_continuation_detailed,
     load_causal_lm,
 )
@@ -26,6 +28,7 @@ from llm_debi_lab.rag import (
 from llm_debi_lab.settings import DEFAULT_MODEL_NAME, LLM_DEBI_LORA_PATH
 
 _state: dict[str, Any] = {}
+_gen_lock = threading.Lock()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 KB_DIR = PROJECT_ROOT / "data" / "kb"
 DEFAULT_LORA_ADAPTER_DIR = PROJECT_ROOT / "data" / "finetune" / "artifacts" / "lesson05-lora"
@@ -40,24 +43,23 @@ async def lifespan(app: FastAPI):
         _state["error"] = str(exc)
         yield
         return
+    _state["model"] = model_base
     _state["model_base"] = model_base
     _state["tokenizer"] = tokenizer
     _state["device"] = device
     _state["model_name"] = DEFAULT_MODEL_NAME
-    _state["model_lora"] = None
+    _state["lora_loaded"] = False
     _state["lora_status"] = "none"
     adapter_dir = Path(LLM_DEBI_LORA_PATH) if LLM_DEBI_LORA_PATH else DEFAULT_LORA_ADAPTER_DIR
     try:
         from peft import PeftModel  # noqa: PLC0415
 
         if adapter_dir.is_dir() and any(adapter_dir.iterdir()):
-            base_for_lora = AutoModelForCausalLM.from_pretrained(DEFAULT_MODEL_NAME).to(
-                device
-            )
-            _state["model_lora"] = PeftModel.from_pretrained(
-                base_for_lora, str(adapter_dir)
-            )
-            _state["model_lora"].eval()
+            peft_model = PeftModel.from_pretrained(model_base, str(adapter_dir))
+            peft_model.eval()
+            _state["model"] = peft_model
+            _state["model_base"] = peft_model
+            _state["lora_loaded"] = True
             _state["lora_status"] = f"ok:{adapter_dir}"
         else:
             _state["lora_status"] = f"missing:{adapter_dir}"
@@ -214,19 +216,26 @@ class RagResponse(GenerateResponse):
     retrieved_chunks: list[RetrievedChunk]
 
 
-def _pick_generation_model(use_lora: bool):
-    if use_lora:
-        m = _state.get("model_lora")
-        if m is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "LoRA adapter not loaded. Run `python -m lesson05.lora_finetune` "
-                    f"(status: {_state.get('lora_status', 'unknown')})"
-                ),
+def _run_generation(use_lora: bool, prompt: str, **kwargs) -> tuple[str, int, float]:
+    if use_lora and not _state.get("lora_loaded"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "LoRA adapter not loaded. Run `python -m lesson05.lora_finetune` "
+                f"(status: {_state.get('lora_status', 'unknown')})"
+            ),
+        )
+    model = _state["model"]
+    # One model serves both paths. The lock keeps adapter on/off from racing.
+    with _gen_lock:
+        with adapter_scope(model, enabled=bool(use_lora)):
+            return generate_continuation_detailed(
+                model,
+                _state["tokenizer"],
+                prompt,
+                _state["device"],
+                **kwargs,
             )
-        return m
-    return _state["model_base"]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -245,7 +254,7 @@ def health() -> dict[str, Any]:
         "device": _state["device"],
         "model": _state["model_name"],
         "lora_status": _state.get("lora_status", ""),
-        "lora_loaded": _state.get("model_lora") is not None,
+        "lora_loaded": bool(_state.get("lora_loaded")),
     }
     if _state.get("rag_error"):
         response["rag_status"] = "error"
@@ -263,12 +272,9 @@ def generate(req: GenerateRequest) -> GenerateResponse:
     if tokenizer is None or device is None or "model_base" not in _state:
         raise HTTPException(status_code=503, detail="Model not loaded yet.")
 
-    model = _pick_generation_model(req.use_lora)
-    text, n_new, elapsed = generate_continuation_detailed(
-        model,
-        tokenizer,
+    text, n_new, elapsed = _run_generation(
+        req.use_lora,
         req.prompt,
-        device,
         max_new_tokens=req.max_new_tokens,
         do_sample=req.do_sample,
         temperature=req.temperature,
@@ -280,7 +286,7 @@ def generate(req: GenerateRequest) -> GenerateResponse:
         elapsed_s=elapsed,
         device=device,
         model_name=str(_state.get("model_name", DEFAULT_MODEL_NAME)),
-        lora_active=bool(req.use_lora and _state.get("model_lora") is not None),
+        lora_active=bool(req.use_lora and _state.get("lora_loaded")),
     )
 
 
@@ -306,16 +312,13 @@ def rag_answer(req: RagRequest) -> RagResponse:
     ):
         raise HTTPException(status_code=503, detail="RAG resources not loaded yet.")
 
-    model = _pick_generation_model(req.use_lora)
     matches = retrieve_top_k(
         req.prompt, chunks, emb_tokenizer, emb_model, device=device, k=req.top_k
     )
     rag_prompt = build_rag_prompt(req.prompt, matches)
-    text, n_new, elapsed = generate_continuation_detailed(
-        model,
-        tokenizer,
+    text, n_new, elapsed = _run_generation(
+        req.use_lora,
         rag_prompt,
-        device,
         max_new_tokens=req.max_new_tokens,
         do_sample=req.do_sample,
         temperature=req.temperature,
@@ -328,7 +331,7 @@ def rag_answer(req: RagRequest) -> RagResponse:
         elapsed_s=elapsed,
         device=device,
         model_name=str(_state.get("model_name", DEFAULT_MODEL_NAME)),
-        lora_active=bool(req.use_lora and _state.get("model_lora") is not None),
+        lora_active=bool(req.use_lora and _state.get("lora_loaded")),
         retrieved_chunks=[
             RetrievedChunk(score=round(m.score, 4), text=m.text) for m in matches
         ],
